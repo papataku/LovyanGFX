@@ -582,6 +582,7 @@ namespace lgfx
         buscfg.max_transfer_sz = 1;
         buscfg.flags = SPICOMMON_BUSFLAG_MASTER | SPICOMMON_BUSFLAG_QUAD;
         buscfg.intr_flags = 0;
+        buscfg.isr_cpu_id = (intr_cpu_id_t)1;
 
         if (ESP_OK != spi_bus_initialize(static_cast<spi_host_device_t>(spi_host), &buscfg, dma_channel))
         {
@@ -603,9 +604,10 @@ namespace lgfx
           .queue_size = 1,
           .pre_cb = nullptr,
           .post_cb = nullptr};
-          if (ESP_OK != spi_bus_add_device(static_cast<spi_host_device_t>(spi_host), &devcfg, &_spi_dev_handle[spi_host])) {
-            ESP_LOGW("LGFX", "Failed to spi_bus_add_device. ");
-          }
+        esp_err_t l_ret = spi_bus_add_device(static_cast<spi_host_device_t>(spi_host), &devcfg, &_spi_dev_handle[spi_host]);
+        if (ESP_OK != l_ret) {
+          ESP_LOGW("LGFX", "Failed to spi_bus_add_device. ");
+        }
       }
 
       *reg(SPI_USER_REG(spi_port)) = SPI_USR_MOSI | SPI_USR_MISO | SPI_DOUTDIN;  // need SD card access (full duplex setting)
