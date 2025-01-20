@@ -237,10 +237,6 @@ namespace lgfx
         void Panel_ST77916::end_qspi()
         {
             /* Stop QSPI */
-            _bus->writeCommand(0x32, 8);
-            _bus->writeCommand(0x00, 8);
-            _bus->writeCommand(0x00, 8);
-            _bus->writeCommand(0x00, 8);
             _bus->wait();
             cs_control(true);
         }
