@@ -286,6 +286,9 @@ namespace lgfx
         
         FlipBuffer _flip_buffer;
 
+        #define MAX_TRANSBUFFER_SIZE    (64*1024)
+        #define MAX_TRANS_LINE          (MAX_TRANSBUFFER_SIZE / (360 * 2))
+
         /* Panel init */
         bool Panel_ST77916v2::init(bool use_reset)
         {
@@ -505,15 +508,20 @@ namespace lgfx
                 {
                     auto wb = w * bytes;
                     uint32_t i = (src_x + param->src_y * param->src_bitwidth) * bytes;
-                    auto src = &((const uint8_t*)param->src_data)[i];
+                    uint8_t *src = (uint8_t *)&((const uint8_t*)param->src_data)[i];
                     setWindow(x, y, x + w - 1, y + h - 1);
                     if (param->src_bitwidth == w || h == 1)
                     {
-                        //write_bytes(src, wb * h, use_dma);
-                        // キューを受信
-                        uint8_t data;
-                        xQueueReceive(_refresh_finish_queue, &data, portMAX_DELAY);
-                        lcd->drawBitmap(x, y, w, h, (const uint8_t *)src);
+                        int_fast16_t local_h = h;
+                        do {
+                            // キューを受信
+                            uint8_t data;
+                            xQueueReceive(_refresh_finish_queue, &data, portMAX_DELAY);
+                            lcd->drawBitmap(x, y + (h - local_h), w, (MAX_TRANS_LINE < local_h) ? MAX_TRANS_LINE : local_h, (const uint8_t *)src);
+                            src += wb * MAX_TRANS_LINE;
+                            local_h -= MAX_TRANS_LINE;
+                        } while (local_h > 0);
+
                     }
                     else
                     {
