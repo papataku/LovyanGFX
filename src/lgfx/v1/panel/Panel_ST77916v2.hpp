@@ -65,11 +65,14 @@ namespace lgfx
             uint32_t readData(uint_fast8_t index, uint_fast8_t len) override;
             void readRect(uint_fast16_t x, uint_fast16_t y, uint_fast16_t w, uint_fast16_t h, void* dst, pixelcopy_t* param) override;
 
+            void setBrightness(uint8_t brightness) override;
+
+            void rst_control(bool level) override;
+
         protected:
             bool _in_transaction = false;
 
             void update_madctl(void);
-            void write_bytes(const uint8_t* data, uint32_t len, bool use_dma);
             static bool onRefreshFinishCallback(void *user_data);
         };
 

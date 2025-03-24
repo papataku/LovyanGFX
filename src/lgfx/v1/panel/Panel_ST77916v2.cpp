@@ -278,18 +278,41 @@ namespace lgfx
 
         #define TFT_SPI_FREQ_HZ (50 * 1000 * 1000)
         ESP_PanelLcd *lcd = NULL;
-        SemaphoreHandle_t _refresh_finish_sem;
+        ESP_PanelBacklight *backlight = NULL;
+
+        QueueHandle_t _refresh_finish_queue;
 
         uint_fast16_t x_start, y_start, x_end, y_end;
+        
+        FlipBuffer _flip_buffer;
 
         /* Panel init */
         bool Panel_ST77916v2::init(bool use_reset)
         {
             ESP_LOGD("ST77916v2","pannel init %d", use_reset);
 
-            if (!Panel_Device::init(use_reset)) {
-                return false;
-            }
+            ledc_timer_config_t ledc_timer = {
+                .speed_mode = LEDC_LOW_SPEED_MODE,
+                .duty_resolution = LEDC_TIMER_13_BIT,
+                .timer_num = LEDC_TIMER_0,
+                .freq_hz = 5000,
+                .clk_cfg = LEDC_AUTO_CLK};
+            ESP_ERROR_CHECK(ledc_timer_config(&ledc_timer));
+          
+            ledc_channel_config_t ledc_channel = {
+                .gpio_num = (TFT_BLK),
+                .speed_mode = LEDC_LOW_SPEED_MODE,
+                .channel = LEDC_CHANNEL_0,
+                .intr_type = LEDC_INTR_DISABLE,
+                .timer_sel = LEDC_TIMER_0,
+                .duty = 0,
+                .hpoint = 0};
+          
+            ESP_ERROR_CHECK(ledc_channel_config(&ledc_channel));
+          
+            backlight = new ESP_PanelBacklight(ledc_timer, ledc_channel);
+            backlight->begin();
+            backlight->off();
 
             ESP_PanelBus_QSPI *panel_bus = new ESP_PanelBus_QSPI(TFT_CS, TFT_SCK, TFT_SDA0, TFT_SDA1, TFT_SDA2, TFT_SDA3);
             panel_bus->configQspiFreqHz(TFT_SPI_FREQ_HZ);
@@ -305,9 +328,13 @@ namespace lgfx
             // setRotation(0);  //设置屏幕方向
             lcd->displayOn();
 
-            //バイナリセマフォを作成
-            _refresh_finish_sem = xSemaphoreCreateBinary();
-            //xSemaphoreGiveFromISR(_refresh_finish_sem, NULL);
+            backlight->on();
+
+            // メッセージキューを作成
+            _refresh_finish_queue = xQueueCreate(1, sizeof(uint8_t));
+            // メッセージキューにデータを送信
+            uint8_t data = 0;
+            xQueueSend(_refresh_finish_queue, &data, portMAX_DELAY);
 
             lcd->attachRefreshFinishCallback(&Panel_ST77916v2::onRefreshFinishCallback, NULL);
 
@@ -421,8 +448,6 @@ namespace lgfx
         }
 
 
-
-
         void Panel_ST77916v2::writePixels(pixelcopy_t* param, uint32_t len, bool use_dma)
         {
             ESP_LOGD("ST77916v2","writePixels %ld %d", len, use_dma);
@@ -439,15 +464,14 @@ namespace lgfx
         void Panel_ST77916v2::writeFillRectPreclipped(uint_fast16_t x, uint_fast16_t y, uint_fast16_t w, uint_fast16_t h, uint32_t rawcolor)
         {
             ESP_LOGD("ST77916v2","writeFillRectPreclipped %d %d %d %d 0x%lX", x, y, w, h, rawcolor);
-
-            uint32_t len = w * h;
+            
             uint_fast16_t xe = w + x - 1;
             uint_fast16_t ye = y + h - 1;
             auto bytes = 2;
 
             setWindow(x,y,xe,ye);
 
-            uint8_t *buf = _bus->getDMABuffer(w * bytes);
+            uint8_t *buf = _flip_buffer.getBuffer(bytes * w);
             for(uint32_t i = 0; i < w; i++)
             {
                 buf[i * 2 + 1] = (rawcolor >> 8) & 0xFF;
@@ -457,9 +481,10 @@ namespace lgfx
             //write_bytes(buf, len * bytes, true);
             for(uint32_t i = 0; i < h; i++)
             {
-                //xSemaphoreTake(_refresh_finish_sem, portMAX_DELAY);
+                // キューを受信
+                uint8_t data;
+                xQueueReceive(_refresh_finish_queue, &data, portMAX_DELAY);
                 lcd->drawBitmap(x, y + i, w, 1, (const uint8_t *)buf);
-                xSemaphoreTake(_refresh_finish_sem, portMAX_DELAY);
             }
 
         }
@@ -485,8 +510,10 @@ namespace lgfx
                     if (param->src_bitwidth == w || h == 1)
                     {
                         //write_bytes(src, wb * h, use_dma);
+                        // キューを受信
+                        uint8_t data;
+                        xQueueReceive(_refresh_finish_queue, &data, portMAX_DELAY);
                         lcd->drawBitmap(x, y, w, h, (const uint8_t *)src);
-                        xSemaphoreTake(_refresh_finish_sem, portMAX_DELAY);
                     }
                     else
                     {
@@ -495,8 +522,10 @@ namespace lgfx
                         do
                         {
                             //write_bytes(src, wb, false);
+                            // キューを受信
+                            uint8_t data;
+                            xQueueReceive(_refresh_finish_queue, &data, portMAX_DELAY);
                             lcd->drawBitmap(x, y + (h - local_h), w, 1, (const uint8_t *)src);
-                            xSemaphoreTake(_refresh_finish_sem, portMAX_DELAY);
                             src += add;
                         } while (--local_h);
                     }
@@ -504,23 +533,27 @@ namespace lgfx
                 else
                 {
                     size_t wb = w * bytes;
-                    auto buf = _bus->getDMABuffer(wb);
+                    auto buf = _flip_buffer.getBuffer(wb);
                     param->fp_copy(buf, 0, w, param);
                     setWindow(x, y, x + w - 1, y + h - 1);
                     //write_bytes(buf, wb, true);
+                    // キューを受信
+                    uint8_t data;
+                    xQueueReceive(_refresh_finish_queue, &data, portMAX_DELAY);
                     lcd->drawBitmap(x, y, w, 1, (const uint8_t *)buf);
-                    xSemaphoreTake(_refresh_finish_sem, portMAX_DELAY);
                     _has_align_data = (_cfg.dlen_16bit && (_write_bits & 15) && (w & h & 1));
                     uint_fast16_t local_h = h;
                     while (--h)
                     {
                         param->src_x = src_x;
                         param->src_y++;
-                        buf = _bus->getDMABuffer(wb);
+                        buf = _flip_buffer.getBuffer(wb);
                         param->fp_copy(buf, 0, w, param);
                         //write_bytes(buf, wb, true);
+                        // キューを受信
+                        uint8_t data;
+                        xQueueReceive(_refresh_finish_queue, &data, portMAX_DELAY);
                         lcd->drawBitmap(x, y+(local_h - h), w, 1, (const uint8_t *)buf);
-                        xSemaphoreTake(_refresh_finish_sem, portMAX_DELAY);
                     }
 
                 }
@@ -534,13 +567,14 @@ namespace lgfx
                     uint32_t i = 0;
                     while (w != (i = param->fp_skip(i, w, param)))
                     {
-                        auto buf = _bus->getDMABuffer(wb);
+                        auto buf = _flip_buffer.getBuffer(wb);
                         int32_t len = param->fp_copy(buf, 0, w - i, param);
                         //setWindow(x + i, y, x + i + len - 1, y);
                         //write_bytes(buf, len * bytes, true);
-                        //xSemaphoreTake(_refresh_finish_sem, portMAX_DELAY);
+                        // キューを受信
+                        uint8_t data;
+                        xQueueReceive(_refresh_finish_queue, &data, portMAX_DELAY);
                         lcd->drawBitmap(x+i, y, len, 1, (const uint8_t *)buf);
-                        xSemaphoreTake(_refresh_finish_sem, portMAX_DELAY);
                         if (w == (i += len)) break;
                     }
                     param->src_x = src_x;
@@ -572,8 +606,21 @@ namespace lgfx
         bool Panel_ST77916v2::onRefreshFinishCallback(void *user_data)
         {
             BaseType_t need_yield = pdFALSE;
-            xSemaphoreGiveFromISR(_refresh_finish_sem, &need_yield);
+            //xSemaphoreGiveFromISR(_refresh_finish_sem, &need_yield);
+            // キューにデータを送信
+            uint8_t data = 0;
+            xQueueSendFromISR(_refresh_finish_queue, &data, &need_yield);
             return need_yield;
+        }
+
+        void Panel_ST77916v2::setBrightness(uint8_t brightness)
+        {
+            backlight->setBrightness(brightness * 100 / 255);
+        } 
+
+        void Panel_ST77916v2::rst_control(bool level)
+        {
+            
         }
         //----------------------------------------------------------------------------
     }
