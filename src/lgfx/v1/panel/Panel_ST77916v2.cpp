@@ -467,27 +467,36 @@ namespace lgfx
         void Panel_ST77916v2::writeFillRectPreclipped(uint_fast16_t x, uint_fast16_t y, uint_fast16_t w, uint_fast16_t h, uint32_t rawcolor)
         {
             ESP_LOGD("ST77916v2","writeFillRectPreclipped %d %d %d %d 0x%lX", x, y, w, h, rawcolor);
-            
-            uint_fast16_t xe = w + x - 1;
-            uint_fast16_t ye = y + h - 1;
+
             auto bytes = 2;
+            uint32_t buffer_size = MAX_TRANSBUFFER_SIZE < (w * h * bytes) ? MAX_TRANSBUFFER_SIZE : (w * h * bytes);
+            uint8_t *buf = _flip_buffer.getBuffer(buffer_size);
+            uint16_t *buf16 = (uint16_t *)buf;
+            auto wb = w * bytes;
+            uint16_t trans_line = buffer_size / wb;
 
-            setWindow(x,y,xe,ye);
-
-            uint8_t *buf = _flip_buffer.getBuffer(bytes * w);
             for(uint32_t i = 0; i < w; i++)
             {
-                buf[i * 2 + 1] = (rawcolor >> 8) & 0xFF;
-                buf[i * 2] = rawcolor & 0xFF;
+                buf16[i] = (uint16_t)(rawcolor & 0xFFFF);
             }
-            //setWindow(x + i, y, x + i + len - 1, y);
-            //write_bytes(buf, len * bytes, true);
-            for(uint32_t i = 0; i < h; i++)
+
+            for(uint32_t i = 0; i < trans_line; i++)
+            {
+                memcpy(&buf[wb * i], buf, wb);
+            }
+
+            for(uint32_t i = 0; i < (h / trans_line); i++)
             {
                 // キューを受信
                 uint8_t data;
                 xQueueReceive(_refresh_finish_queue, &data, portMAX_DELAY);
-                lcd->drawBitmap(x, y + i, w, 1, (const uint8_t *)buf);
+                lcd->drawBitmap(x, y + (i * trans_line), w, trans_line, (const uint8_t *)buf);
+            }
+            if (0 != (h % trans_line)) {
+                // キューを受信
+                uint8_t data;
+                xQueueReceive(_refresh_finish_queue, &data, portMAX_DELAY);
+                lcd->drawBitmap(x, y + (((uint16_t)(h / trans_line)) * trans_line), w, (h % trans_line), (const uint8_t *)buf);
             }
 
         }
